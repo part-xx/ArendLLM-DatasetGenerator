@@ -12,75 +12,83 @@ import org.arend.typechecking.visitor.CheckTypeVisitor
 import org.arend.typechecking.visitor.SearchVisitor
 import java.util.*
 
-class SubexprCollector (errorReporter: ErrorReporter?, pool: GlobalInstancePool?, extension: ArendExtension?, private val collectedExpressions: MutableList<SubexprEnvironment>) : CheckTypeVisitor(errorReporter, pool, extension) {
-    private var forbiddenSet: MutableSet<Concrete.Expression> = HashSet()
-    private var currentAncestors: MutableList<Concrete.Expression> = ArrayList()
+class SubexprCollector(
+  errorReporter: ErrorReporter?,
+  pool: GlobalInstancePool?,
+  extension: ArendExtension?,
+  private val collectedExpressions: MutableList<SubexprEnvironment>,
+  private val concreteToCore: MutableMap<Concrete.Expression, Expression> = HashMap()
+) : CheckTypeVisitor(errorReporter, pool, extension) {
+  // private var forbiddenSet: MutableSet<Concrete.Expression> = HashSet()
+  // private var currentAncestors: MutableList<Concrete.Expression> = ArrayList()
 
-    companion object {
-        const val MIN_LENGTH = 2
-        const val MAX_LENGTH = 1000
-        const val MIN_LEAVES = 10
-        const val MAX_LEAVES = 30
+  companion object {
+    const val MIN_LENGTH = 2
+    const val MAX_LENGTH = 1000
+    const val MIN_LEAVES = 10
+    const val MAX_LEAVES = 30
+  }
+
+  override fun checkExpr(expr: Concrete.Expression?, expectedType: Expression?): TypecheckingResult? {
+    if (expr == null) return null
+    // currentAncestors.addLast(expr)
+
+    val result = super.checkExpr(expr, expectedType)
+    // currentAncestors.removeLast()
+    if (result == null) {
+      return null
     }
 
-    override fun checkExpr(expr: Concrete.Expression?, expectedType: Expression?): TypecheckingResult? {
-        if (expr == null) return null
-        currentAncestors.addLast(expr)
+    concreteToCore[expr] = result.expression
 
-        val result = super.checkExpr(expr, expectedType)
-        currentAncestors.removeLast()
-        if (result == null) {
-            return null
-        }
-
-        /*if (currentAncestors.isNotEmpty() && forbiddenSet.contains(currentAncestors.last())) {
-            return result
-        }*/
-
-        if (!isSuitable(expr, result)) {
-            return result
-        }
-
-        // collectedExpressions.addLast(SubexprEnvironment(result.expression, ArrayList(context.values)))
-
-        forbiddenSet.add(expr)
-        collectedExpressions.addLast(SubexprEnvironment(expr, result.expression, result.type, HashSet(), HashSet()))
+    /*if (currentAncestors.isNotEmpty() && forbiddenSet.contains(currentAncestors.last())) {
         return result
+    }*/
+
+    if (!isSuitable(expr, result)) {
+      return result
     }
 
-    private fun isSuitable(expr: Concrete.Expression, coreExpr: TypecheckingResult): Boolean {
-        val universeExpr = coreExpr.type.type.normalize(NormalizationMode.WHNF)
-        if (universeExpr !is UniverseExpression || !universeExpr.sort.isProp) return false
+    // collectedExpressions.addLast(SubexprEnvironment(result.expression, ArrayList(context.values)))
 
-        if (expr.toString().contains("{!}")) return false
+    //forbiddenSet.add(expr)
+    collectedExpressions.addLast(SubexprEnvironment(expr, result.expression, result.type, HashSet(), HashSet()))
+    return result
+  }
 
-        if (expr.toString().startsWith("_")) return false
+  private fun isSuitable(expr: Concrete.Expression, coreExpr: TypecheckingResult): Boolean {
+    val universeExpr = coreExpr.type.type.normalize(NormalizationMode.WHNF)
+    if (universeExpr !is UniverseExpression || !universeExpr.sort.isProp) return false
 
-        val len = expr.toString().split(" ").filter { it.isNotBlank() }.size
+    if (expr.toString().contains("{!}")) return false
 
-        return len in MIN_LENGTH..MAX_LENGTH
-    }
+    if (expr.toString().startsWith("_")) return false
 
-    private fun checkNumLeaves(expr: Concrete.Expression, coreExpr: TypecheckingResult): Boolean {
-        var numLeaves = 0
+    val len = expr.toString().split(" ").filter { it.isNotBlank() }.size
 
-        coreExpr.expression.accept(object: SearchVisitor<Void>() {
-            override fun processDefCall(expression: DefCallExpression, param: Void?): CoreExpression.FindAction {
-                ++ numLeaves
-                return super.processDefCall(expression, param)
-            }
+    return len in MIN_LENGTH..MAX_LENGTH
+  }
 
-            override fun visitInteger(expr: IntegerExpression?, params: Void?): Boolean {
-                ++ numLeaves
-                return super.visitInteger(expr, params)
-            }
+  private fun checkNumLeaves(expr: Concrete.Expression, coreExpr: TypecheckingResult): Boolean {
+    var numLeaves = 0
 
-            override fun visitReference(expression: ReferenceExpression?, param: Void?): Boolean {
-                ++ numLeaves
-                return super.visitReference(expression, param)
-            }
-        }, null)
+    coreExpr.expression.accept(object : SearchVisitor<Void>() {
+      override fun processDefCall(expression: DefCallExpression, param: Void?): CoreExpression.FindAction {
+        ++numLeaves
+        return super.processDefCall(expression, param)
+      }
 
-        return numLeaves in MIN_LEAVES..MAX_LEAVES
-    }
+      override fun visitInteger(expr: IntegerExpression?, params: Void?): Boolean {
+        ++numLeaves
+        return super.visitInteger(expr, params)
+      }
+
+      override fun visitReference(expression: ReferenceExpression?, param: Void?): Boolean {
+        ++numLeaves
+        return super.visitReference(expression, param)
+      }
+    }, null)
+
+    return numLeaves in MIN_LEAVES..MAX_LEAVES
+  }
 }
