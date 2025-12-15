@@ -89,6 +89,7 @@ private fun writeToJson(subexprs: List<SubexprEnvironment>, steps: List<String>)
       if (it.type.expr is ClassCallExpression) it.name + " : " + type.substringBefore("{") else it.name + " : " + type
     })
     json.put("Premises", subexprs[i].premises.map {
+      if (!steps[i].contains(it.name) && !subexprs[i].expectedType.toString().contains(it.name)) return@map ""
       val premiseDoc =
         ToAbstractVisitor.convert(it, PrettyPrinterConfig.DEFAULT).prettyPrint(PrettyPrinterConfig.DEFAULT)
       val premiseStr = if (it is ClassDefinition) "$premiseDoc".substringBefore("{") else "$premiseDoc"
@@ -177,6 +178,7 @@ fun main(args: Array<String>) {
     println(filteredExpressions.size)
 
     val steps = ArrayList<String>()
+    val finalExpressions = ArrayList<SubexprEnvironment>()
 
     for (expr in filteredExpressions) {
       val step = extractStep(expr.subExpr, concreteToCore) ?: continue
@@ -189,10 +191,15 @@ fun main(args: Array<String>) {
           break
         }
       }*/
-      steps.add(stepStr)
+      if (stepStr.length < 200 && expr.expectedType.toString().length < 400) {
+        steps.add(stepStr)
+        finalExpressions.add(expr)
+      }
     }
 
-    writeToJson(filteredExpressions, steps)
+    println(finalExpressions.size)
+
+    writeToJson(finalExpressions, steps)
 
     /*
   while (true) {

@@ -24,6 +24,11 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
     val newArgs = ArrayList<Concrete.Argument>()
     var createdNewGoals = false
     for (i in 0..<proof.arguments.size) {
+      if (proof.function.toString() == "rewrite" && i == 0) {
+        newArgs.add(proof.arguments[i])
+        continue
+      }
+
       val coreArg = coreArgs[i]
       if (coreArg != null) {
         val universeExpr = coreArg.type.type.normalize(NormalizationMode.WHNF)
