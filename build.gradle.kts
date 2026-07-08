@@ -4,7 +4,7 @@ plugins {
 
 // val projectArend = gradle.includedBuild("Arend")
 group = "org.arend.lang"
-version = "1.10.0.3"
+version = "1.11.0.3"
 
 repositories {
     mavenCentral()

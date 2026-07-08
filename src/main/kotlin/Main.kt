@@ -1,36 +1,49 @@
-import org.json.JSONObject
 import org.apache.commons.cli.*
+import org.arend.core.context.binding.EvaluatingBinding
 import org.arend.core.definition.CallableDefinition
 import org.arend.core.definition.ClassDefinition
+import org.arend.core.definition.Constructor
 import org.arend.core.expr.ClassCallExpression
 import org.arend.core.expr.DefCallExpression
 import org.arend.core.expr.Expression
-import org.arend.core.expr.ReferenceExpression
+import org.arend.core.expr.UniverseExpression
 import org.arend.core.expr.visitor.FreeVariablesCollector
+import org.arend.core.sort.Sort
+import org.arend.core.subst.InPlaceLevelSubstVisitor
 import org.arend.error.DummyErrorReporter
+import org.arend.ext.concrete.expr.ConcreteExpression
 import org.arend.ext.core.expr.CoreExpression
+import org.arend.ext.core.ops.NormalizationMode
+import org.arend.ext.error.ErrorReporter
 import org.arend.ext.error.ListErrorReporter
 import org.arend.ext.module.FullName
+import org.arend.ext.module.LongName
 import org.arend.ext.module.ModuleLocation
+import org.arend.ext.module.ModulePath
 import org.arend.ext.prettyprinting.PrettyPrinterConfig
+import org.arend.extImpl.ConcreteFactoryImpl
 import org.arend.frontend.library.CliServerRequester
 import org.arend.frontend.library.FileSourceLibrary
 import org.arend.frontend.library.LibraryManager
 import org.arend.frontend.library.SourceLibrary
 import org.arend.frontend.source.PreludeResourceSource
+import org.arend.naming.reference.Referable
+import org.arend.naming.reference.TCDefReferable
+import org.arend.naming.scope.Scope
+import org.arend.naming.scope.ScopeFactory
 import org.arend.prelude.Prelude
+import org.arend.server.ArendChecker
 import org.arend.server.ArendServer
 import org.arend.server.ProgressReporter
 import org.arend.server.impl.ArendServerImpl
-import org.arend.term.abs.Abstract
 import org.arend.term.concrete.Concrete
-import org.arend.term.concrete.Concrete.ResolvableDefinition
+import org.arend.term.concrete.SearchConcreteVisitor
 import org.arend.term.group.ConcreteGroup
 import org.arend.term.prettyprint.ToAbstractVisitor
 import org.arend.typechecking.computation.UnstoppableCancellationIndicator
-import org.arend.typechecking.visitor.CheckTypeVisitor
 import org.arend.typechecking.visitor.SearchVisitor
 import org.arend.util.FileUtils
+import org.json.JSONObject
 import java.io.File
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -64,7 +77,80 @@ private fun collectDefinitions(expr: Expression, defs: MutableSet<CallableDefini
   }, null)
 }
 
-private fun computePremisesAndContext(subexprs: List<SubexprEnvironment>) {
+private fun collectDefinitionsConcrete(expr: ConcreteExpression, nameResolver: MyNameResolver, defs: MutableSet<CallableDefinition>) {
+  if (expr !is Concrete.Expression) return
+  expr.accept(object : SearchConcreteVisitor<Void, Void?>() {
+    override fun visitReference(expression: Concrete.ReferenceExpression, param: Void?): Void? {
+      val definition = nameResolver.resolveReferable(expression.referent)
+      if (definition != null) {
+        val name = definition.name
+        if (!listOf("Path", "I", "at", "Array", "DArray").contains(name) && definition !is ClassDefinition) {
+          defs.add(definition)
+        }
+      }
+      return super.visitReference(expression, param)
+    }
+  }, null)
+}
+
+class MyNameResolver(private val checker: ArendChecker, private val server: ArendServer, private val modulePath: ModulePath, private val libName: String) {
+  private fun ensureTypechecked(tcReferable: TCDefReferable, errorReporter: ErrorReporter) {
+    if (tcReferable.typechecked != null) return
+
+    // 1. Get the FullName of the referable
+    val fullName = tcReferable.refFullName
+    val module = fullName.module ?: return
+
+    // 2. Get a checker for the module containing this definition
+    val checker = server.getCheckerFor(listOf(module))
+
+    // 3. Trigger typechecking via the public API
+    // This will typecheck the definition and all its dependencies
+    checker.typecheck(
+      listOf(fullName),
+      errorReporter,
+      UnstoppableCancellationIndicator.INSTANCE,
+      ProgressReporter.empty()
+    )
+  }
+
+  fun stringToCallableDefinition(fullName: String): CallableDefinition? {
+    checker.resolveModules(UnstoppableCancellationIndicator.INSTANCE, ProgressReporter.empty())
+    val moduleLocation = server.findModule(modulePath, libName, false, true) ?: return null
+    val group = server.getRawGroup(moduleLocation) ?: return null
+    val moduleScopeProvider = server.getModuleScopeProvider(libName, false)
+    val scope = ScopeFactory.forGroup(group, moduleScopeProvider)
+    val path = LongName.fromString(fullName).toList()
+    val referable = Scope.resolveName(scope, path)
+    val tcReferable = referable as? TCDefReferable
+      ?: (referable as? org.arend.ext.reference.DataContainer)?.data as? TCDefReferable
+      ?: return null
+
+    var definition = tcReferable.typechecked // goal.typechecker.getCoreDefinition(tcReferable)
+    if (definition == null) {
+      ensureTypechecked(tcReferable, ListErrorReporter())
+      definition = tcReferable.typechecked
+    }
+
+    return definition as? CallableDefinition
+  }
+
+  fun resolveReferable(referable: Referable): CallableDefinition? {
+    val tcReferable = referable as? TCDefReferable
+      ?: (referable as? org.arend.ext.reference.DataContainer)?.data as? TCDefReferable
+      ?: return null
+
+    var definition = tcReferable.typechecked
+    if (definition == null) {
+      ensureTypechecked(tcReferable, ListErrorReporter())
+      definition = tcReferable.typechecked
+    }
+
+    return definition as? CallableDefinition
+  }
+}
+
+private fun computePremisesAndContext(subexprs: List<SubexprEnvironment>, nameResolver: MyNameResolver) {
   for (expr in subexprs) {
     val relevantContext = HashSet(FreeVariablesCollector.getFreeVariables(expr.coreSubExpr))
     relevantContext.addAll(FreeVariablesCollector.getFreeVariables(expr.expectedType))
@@ -74,6 +160,7 @@ private fun computePremisesAndContext(subexprs: List<SubexprEnvironment>) {
 
     collectDefinitions(expr.coreSubExpr, premises)
     collectDefinitions(expr.expectedType, premises)
+    collectDefinitionsConcrete(expr.subExpr, nameResolver, premises)
 
     expr.premises = premises
   }
@@ -83,18 +170,52 @@ private fun writeToJson(subexprs: List<SubexprEnvironment>, steps: List<String>)
   val jsonEntries = ArrayList<JSONObject>()
   for (i in 0..<subexprs.size) {
     val json = JSONObject()
-    json.put("Expected type", subexprs[i].expectedType.toString())
+    json.put("Expected type", subexprs[i].expectedType.normalize(NormalizationMode.RNF).toString())
     json.put("Context", subexprs[i].context.map {
-      val type = it.type.expr.toString()
-      if (it.type.expr is ClassCallExpression) it.name + " : " + type.substringBefore("{") else it.name + " : " + type
+      val type = it.typeExpr.normalize(NormalizationMode.RNF).toString()
+      val bind = if (it.typeExpr is ClassCallExpression) it.name + " : " + type.substringBefore("{") else it.name + " : " + type
+      if (it is EvaluatingBinding) bind + " => " + it.expression else bind
     })
     json.put("Premises", subexprs[i].premises.map {
-      if (!steps[i].contains(it.name) && !subexprs[i].expectedType.toString().contains(it.name)) return@map ""
+      if (!subexprs[i].subExpr.toString().contains(it.name) && !subexprs[i].expectedType.toString().contains(it.name)) return@map ""
+      var concreteDef = ToAbstractVisitor.convert(it, PrettyPrinterConfig.DEFAULT)
+      if (concreteDef is Concrete.FunctionDefinition) {
+        if (concreteDef.body !is Concrete.TermFunctionBody || concreteDef.body.term.toString().length > 50) {
+          val factory = ConcreteFactoryImpl(concreteDef.data)
+          val body = factory.body(factory.goal())
+          concreteDef = factory.function(
+            concreteDef.ref,
+            concreteDef.kind,
+            concreteDef.parameters,
+            concreteDef.resultType,
+            concreteDef.resultTypeLevel,
+            body
+          )
+        }
+      }
       val premiseDoc =
-        ToAbstractVisitor.convert(it, PrettyPrinterConfig.DEFAULT).prettyPrint(PrettyPrinterConfig.DEFAULT)
-      val premiseStr = if (it is ClassDefinition) "$premiseDoc".substringBefore("{") else "$premiseDoc"
+        concreteDef.prettyPrint(PrettyPrinterConfig.DEFAULT)
+      val premiseStr = if (it is ClassDefinition) "$premiseDoc".substringBefore("{")
+                       else if (it is Constructor) "$premiseDoc : " + it.getDataTypeExpression(it.makeIdLevels())
+                       else "$premiseDoc"
       if (premiseStr.startsWith("\\instance") && premiseStr.length > 200) "" else premiseStr
     }.filter { it.isNotBlank() })
+    val lemmaConcrete = ToAbstractVisitor.convert(subexprs[i].lemma, PrettyPrinterConfig.DEFAULT)
+    val lemmaSignature = if (lemmaConcrete is Concrete.FunctionDefinition) {
+      val factory = ConcreteFactoryImpl(lemmaConcrete.data)
+      val sigDef = factory.function(
+        lemmaConcrete.ref,
+        lemmaConcrete.kind,
+        lemmaConcrete.parameters,
+        lemmaConcrete.resultType,
+        lemmaConcrete.resultTypeLevel,
+        factory.body(factory.goal())
+      )
+      sigDef.prettyPrint(PrettyPrinterConfig.DEFAULT).toString().substringBefore("=> {?}").trim()
+    } else {
+      lemmaConcrete.prettyPrint(PrettyPrinterConfig.DEFAULT).toString()
+    }
+    json.put("Lemma", lemmaSignature)
     json.put("Expression", steps[i])
     jsonEntries.add(json)
   }
@@ -127,6 +248,9 @@ fun main(args: Array<String>) {
 
     val collectedExpressions: MutableList<SubexprEnvironment> = ArrayList()
     val concreteToCore: MutableMap<Concrete.Expression, Expression> = HashMap()
+    val defsToDissect = listOf(
+      "exampleForPS")
+    var currentNameResolver: MyNameResolver? = null
     for (library in requestedLibraries) {
       libraryManager.updateLibrary(library, server)
       for (modulePath in library.findModules(false)) {
@@ -138,6 +262,7 @@ fun main(args: Array<String>) {
         val checker = server.getCheckerFor(
           listOf(module)
         )
+        currentNameResolver = MyNameResolver(checker, server, modulePath, library.libraryName)
         library.getSource(modulePath, false)?.load(server, ListErrorReporter())
         val group: ConcreteGroup = server.getRawGroup(module) ?: exitProcess(1)
 
@@ -145,35 +270,47 @@ fun main(args: Array<String>) {
           x.definition?.let {
             checker.typecheck(
               FullName(module, it.data.refLongName),
-              { errorReporter, pool, arendExtension, listener ->
+              { errorReporter, pool, arendExtension, _ ->
                 SubexprCollector(
                   errorReporter,
                   pool,
                   arendExtension,
                   collectedExpressions,
-                  concreteToCore
+                  concreteToCore,
+                  defsToDissect
                 )
               },
               null, ListErrorReporter(), UnstoppableCancellationIndicator.INSTANCE,
-              ProgressReporter.empty<List<ResolvableDefinition?>>()
+              ProgressReporter.empty()
             )
           }
         }
       }
     }
 
-    var goals: MutableSet<String> = HashSet()
+    // var goals: MutableSet<String> = HashSet()
+    val seenExprs: MutableSet<ConcreteExpression> = HashSet()
 
-    val filteredExpressions = collectedExpressions.filter { expr ->
-      val expType = expr.expectedType.toString()
-      val seenGoal = goals.contains(expType)
-      if (!seenGoal) {
-        goals.add(expType)
-      }
-      !seenGoal
+    for (expr in collectedExpressions) {
+      println(expr.subExpr.toString().take(20))
     }
 
-    computePremisesAndContext(filteredExpressions)
+    val filteredExpressions = collectedExpressions.filter { expr ->
+      // val expType = expr.expectedType.toString()
+      // val seenGoal = goals.contains(expType)
+      val seenExpr = seenExprs.contains(expr.subExpr)
+      if (seenExpr || expr.expectedType.toString().startsWith("DArray") || expr.subExpr.toString().startsWith("solve")
+        || expr.subExpr is Concrete.NewExpression) {
+        false
+      } else {
+        seenExprs.add(expr.subExpr)
+        val universeExpr = expr.expectedType.type.normalize(NormalizationMode.WHNF) as? UniverseExpression ?: return@filter false
+        universeExpr.sort.isProp //.sortExpression.isProp
+        //  || (universeExpr.sort.hLevel.`var`?.let { it is InferenceLevelVariable } ?: false)
+      }
+    }
+
+    currentNameResolver?.let { computePremisesAndContext(filteredExpressions, it) }
 
     println(filteredExpressions.size)
 
@@ -191,13 +328,17 @@ fun main(args: Array<String>) {
           break
         }
       }*/
-      if (stepStr.length < 200 && expr.expectedType.toString().length < 400) {
+      //if (stepStr.length < 200 && expr.expectedType.toString().length < 400) {
         steps.add(stepStr)
         finalExpressions.add(expr)
-      }
+      //}
     }
 
     println(finalExpressions.size)
+
+    for (expr in steps) {
+      println(expr.take(20))
+    }
 
     writeToJson(finalExpressions, steps)
 
@@ -211,7 +352,7 @@ fun main(args: Array<String>) {
       println(collectedExpressions[ind].expectedType)
       println("Context:")
       for (binding in collectedExpressions[ind].context) {
-          print(binding.name + " : " + binding.type.expr + ", ")
+          print(binding.name + " : " + binding.typeExpr + ", ")
       }
       println("\nPremises:")
       for (premise in collectedExpressions[ind].premises) {

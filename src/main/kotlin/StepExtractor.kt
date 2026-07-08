@@ -1,4 +1,5 @@
 import org.arend.core.expr.AppExpression
+import org.arend.core.expr.ClassCallExpression
 import org.arend.core.expr.DefCallExpression
 import org.arend.core.expr.Expression
 import org.arend.core.expr.UniverseExpression
@@ -9,6 +10,19 @@ import org.arend.term.concrete.ConcreteExpressionFactory
 
 fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expression, Expression>): ConcreteExpression? {
   if (proof is Concrete.AppExpression) {
+    val newArgs = ArrayList<Concrete.Argument>()
+    if (proof.function.toString() == "mcases") {
+      for (arg in proof.arguments) {
+        val argExpr = arg.expression
+        if (argExpr is Concrete.CaseExpression) {
+          newArgs.add(Concrete.Argument(processCase(argExpr), arg.isExplicit))
+        } else {
+          newArgs.add(arg)
+        }
+      }
+      return Concrete.AppExpression.make(null, proof.function, newArgs)
+    }
+
     val coreArgs = ArrayList<Expression?>()
 
     for (arg in proof.arguments) {
@@ -21,7 +35,6 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
       coreArgs.add(coreArg)
     }
 
-    val newArgs = ArrayList<Concrete.Argument>()
     var createdNewGoals = false
     for (i in 0..<proof.arguments.size) {
       if (proof.function.toString() == "rewrite" && i == 0) {
@@ -30,7 +43,7 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
       }
 
       val coreArg = coreArgs[i]
-      if (coreArg != null) {
+      if (coreArg != null && coreArg.type !is ClassCallExpression) {
         val universeExpr = coreArg.type.type.normalize(NormalizationMode.WHNF)
         if (universeExpr is UniverseExpression && universeExpr.sort.isProp) {
           if (proof.arguments[i].expression !is Concrete.ReferenceExpression) {
@@ -50,12 +63,7 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
     val goal = ConcreteExpressionFactory.cGoal("", null)
     return ConcreteExpressionFactory.cLam(proof.parameters, goal)
   } else if (proof is Concrete.CaseExpression) {
-    val clauses = ArrayList<Concrete.FunctionClause>()
-    for (clause in proof.clauses) {
-      val goal = ConcreteExpressionFactory.cGoal("", null)
-      clauses.add(ConcreteExpressionFactory.cClause(clause.patterns, goal))
-    }
-    return ConcreteExpressionFactory.cCase(proof.isSCase, proof.arguments, proof.resultType, proof.resultTypeLevel, clauses)
+    return processCase(proof)
   } else if (proof is Concrete.TupleExpression) {
     val fieldSteps: MutableList<Concrete.Expression> = ArrayList()
     for (field in proof.fields) {
@@ -68,6 +76,15 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
     return ConcreteExpressionFactory.cProj(step, proof.field)
   }
   return proof
+}
+
+fun processCase(case: Concrete.CaseExpression): Concrete.CaseExpression {
+  val clauses = ArrayList<Concrete.FunctionClause>()
+  for (clause in case.clauses) {
+    val goal = ConcreteExpressionFactory.cGoal("", null)
+    clauses.add(ConcreteExpressionFactory.cClause(clause.patterns, goal))
+  }
+  return ConcreteExpressionFactory.cCase(case.isSCase, case.arguments, case.resultType, case.resultTypeLevel, clauses)
 }
 
 fun getMatchedCoreArgs(args: List<Concrete.Argument>, coreArgs: List<Pair<Expression, Boolean>>): List<Expression>? {

@@ -1,6 +1,6 @@
-import org.arend.core.definition.CallableDefinition
 import org.arend.core.expr.*
-import org.arend.core.expr.visitor.FreeVariablesCollector
+import org.arend.core.sort.Sort
+import org.arend.core.subst.InPlaceLevelSubstVisitor
 import org.arend.ext.ArendExtension
 import org.arend.ext.core.expr.CoreExpression
 import org.arend.ext.core.ops.NormalizationMode
@@ -17,7 +17,8 @@ class SubexprCollector(
   pool: GlobalInstancePool?,
   extension: ArendExtension?,
   private val collectedExpressions: MutableList<SubexprEnvironment>,
-  private val concreteToCore: MutableMap<Concrete.Expression, Expression> = HashMap()
+  private val concreteToCore: MutableMap<Concrete.Expression, Expression> = HashMap(),
+  private val defsToDissect: List<String>
 ) : CheckTypeVisitor(errorReporter, pool, extension) {
   // private var forbiddenSet: MutableSet<Concrete.Expression> = HashSet()
   // private var currentAncestors: MutableList<Concrete.Expression> = ArrayList()
@@ -52,13 +53,38 @@ class SubexprCollector(
     // collectedExpressions.addLast(SubexprEnvironment(result.expression, ArrayList(context.values)))
 
     //forbiddenSet.add(expr)
-    collectedExpressions.addLast(SubexprEnvironment(expr, result.expression, result.type, HashSet(), HashSet()))
+    collectedExpressions.addLast(SubexprEnvironment(expr, result.expression, result.type, HashSet(), HashSet(), definition))
     return result
   }
 
+  /*override fun finalize(
+    result: TypecheckingResult?,
+    sourceNode: Concrete.SourceNode?,
+    propIfPossible: Boolean
+  ): TypecheckingResult? {
+    val finalResult = super.finalize(result, sourceNode, propIfPossible) ?: return null
+    for (expr in collectedExpressions) {
+      if (!expr.levelsFixed) {
+        val levelSolver = equations.makeLevelEquationsSolver()
+        val levelSubstitution = levelSolver.solveLevels()
+        val substVisitor = InPlaceLevelSubstVisitor(levelSubstitution)
+        val sort: Sort? = expr.expectedType.getSortOfType()
+        if (sort != null) {
+          levelSolver.addPropEquationIfPossible(sort.getHLevel())
+        }
+        expr.expectedType.accept(substVisitor, null)
+        expr.coreSubExpr.accept(substVisitor, null)
+        expr.levelsFixed = true
+      }
+    }
+    return finalResult
+  } */
+
   private fun isSuitable(expr: Concrete.Expression, coreExpr: TypecheckingResult): Boolean {
-    val universeExpr = coreExpr.type.type.normalize(NormalizationMode.WHNF)
-    if (universeExpr !is UniverseExpression || !universeExpr.sort.isProp) return false
+    if (!defsToDissect.isEmpty() && !defsToDissect.contains(definition.name)) return false
+
+    // val universeExpr = coreExpr.type.type.normalize(NormalizationMode.WHNF)
+    // if (universeExpr !is UniverseExpression || !universeExpr.sort.isProp) return false
 
     if (expr.toString().contains("{!}")) return false
 
