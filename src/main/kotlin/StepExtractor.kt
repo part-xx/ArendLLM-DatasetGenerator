@@ -8,6 +8,9 @@ import org.arend.ext.core.ops.NormalizationMode
 import org.arend.term.concrete.Concrete
 import org.arend.term.concrete.ConcreteExpressionFactory
 
+/** The metas of arend-lib that take the equality to rewrite with as an explicit argument. */
+private val REWRITE_METAS = setOf("rewrite", "rewriteI", "rewriteEq")
+
 fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expression, Expression>): ConcreteExpression? {
   if (proof is Concrete.AppExpression) {
     val newArgs = ArrayList<Concrete.Argument>()
@@ -35,9 +38,15 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
       coreArgs.add(coreArg)
     }
 
+    // A rewrite meta READS its equality — `rewrite p t` needs p to know what to replace —
+    // so that argument is kept even though it is a proof of a proposition. It is the first
+    // EXPLICIT one: `rewrite {i_1, ... i_k} p t` pins occurrence indices before it.
+    val equalityIdx = if (proof.function.toString() in REWRITE_METAS)
+      proof.arguments.indexOfFirst { it.isExplicit } else -1
+
     var createdNewGoals = false
     for (i in 0..<proof.arguments.size) {
-      if (proof.function.toString() == "rewrite" && i == 0) {
+      if (i == equalityIdx) {
         newArgs.add(proof.arguments[i])
         continue
       }
@@ -45,7 +54,7 @@ fun extractStep(proof: ConcreteExpression, concreteToCore: Map<Concrete.Expressi
       val coreArg = coreArgs[i]
       if (coreArg != null && coreArg.type !is ClassCallExpression) {
         val universeExpr = coreArg.type.type.normalize(NormalizationMode.WHNF)
-        if (universeExpr is UniverseExpression && universeExpr.sort.isProp) {
+        if (universeExpr is UniverseExpression && universeExpr.sortExpression.isProp) {
           if (proof.arguments[i].expression !is Concrete.ReferenceExpression) {
             val goal = ConcreteExpressionFactory.cGoal("", null)
             newArgs.add(Concrete.Argument(goal, proof.arguments[i].isExplicit))
