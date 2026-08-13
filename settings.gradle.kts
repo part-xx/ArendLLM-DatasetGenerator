@@ -3,5 +3,5 @@ plugins {
 }
 rootProject.name = "ArendLLM-DatasetGenerator"
 
-includeBuild("../arend-lang-new/Arend")
+includeBuild("../arend-lang/Arend")
 

@@ -18,7 +18,8 @@ class SubexprCollector(
   extension: ArendExtension?,
   private val collectedExpressions: MutableList<SubexprEnvironment>,
   private val concreteToCore: MutableMap<Concrete.Expression, Expression> = HashMap(),
-  private val defsToDissect: List<String>
+  private val defsToDissect: List<String>,
+  private val modulesToDissect: List<String> = ArrayList()
 ) : CheckTypeVisitor(errorReporter, pool, extension) {
   // private var forbiddenSet: MutableSet<Concrete.Expression> = HashSet()
   // private var currentAncestors: MutableList<Concrete.Expression> = ArrayList()
@@ -82,6 +83,7 @@ class SubexprCollector(
 
   private fun isSuitable(expr: Concrete.Expression, coreExpr: TypecheckingResult): Boolean {
     if (!defsToDissect.isEmpty() && !defsToDissect.contains(definition.name)) return false
+    if (modulesToDissect.isNotEmpty() && !modulesToDissect.contains(definition.ref.modulePath.toString())) return false
 
     // val universeExpr = coreExpr.type.type.normalize(NormalizationMode.WHNF)
     // if (universeExpr !is UniverseExpression || !universeExpr.sort.isProp) return false
